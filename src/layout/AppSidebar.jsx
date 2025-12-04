@@ -3,7 +3,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { LayoutDashboard, DollarSign, CreditCard, PieChart } from "lucide-react";
 
 const AppSidebar = () => {
-  const { isExpanded, isMobileOpen, isMobile } = useSidebar();
+  const { isExpanded, isMobileOpen, isMobile, toggleMobileSidebar } = useSidebar();
   const location = useLocation();
   const { pathname } = location;
 
@@ -59,9 +59,12 @@ const AppSidebar = () => {
               <li key={item.path}>
                 <Link
                   to={item.path}
+                  onClick={() => {
+                    if (isMobile && isMobileOpen) toggleMobileSidebar();
+                  }}
                   className={`group relative flex items-center gap-2.5 rounded-lg px-4 py-2 font-medium duration-300 ease-in-out hover:bg-gray-100 dark:hover:bg-gray-800 ${pathname === item.path
-                      ? "bg-gray-100 text-blue-600 dark:bg-gray-800 dark:text-white"
-                      : "text-gray-500 dark:text-gray-400"
+                    ? "bg-gray-100 text-blue-600 dark:bg-gray-800 dark:text-white"
+                    : "text-gray-500 dark:text-gray-400"
                     } ${!isExpanded && !isMobileOpen ? "justify-center" : ""}`}
                 >
                   {item.icon}
