@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
-import { Plus, Trash2 } from 'lucide-react'
+import { compressImage } from '@/utils/compressImage'
+import { Plus, Trash2, Paperclip, Eye, X, Upload } from 'lucide-react'
 
 export default function Transactions() {
   const [transactions, setTransactions] = useState([])
@@ -8,7 +9,16 @@ export default function Transactions() {
   const [budgets, setBudgets] = useState([])
   const [availableCategories, setAvailableCategories] = useState([])
   const [loading, setLoading] = useState(true)
+  const [uploading, setUploading] = useState(false)
   const [selectedBudgetId, setSelectedBudgetId] = useState('')
+
+  // Modal State
+  const [isModalOpen, setIsModalOpen] = useState(false)
+  const [selectedReceipt, setSelectedReceipt] = useState('')
+
+  // Upload for existing transaction
+  const fileInputRef = useRef(null)
+  const [uploadingId, setUploadingId] = useState(null)
 
   const [newTransaction, setNewTransaction] = useState({
     amount: '',
@@ -16,6 +26,7 @@ export default function Transactions() {
     type: 'expense',
     category_id: '',
     date: new Date().toISOString().split('T')[0],
+    receipt_file: null
   })
 
   useEffect(() => {
@@ -23,7 +34,6 @@ export default function Transactions() {
   }, [])
 
   useEffect(() => {
-    // When date changes, try to auto-select the matching budget
     if (newTransaction.date) {
       const month = newTransaction.date.slice(0, 7)
       const matchingBudget = budgets.find(b => b.month === month)
@@ -36,7 +46,6 @@ export default function Transactions() {
   }, [newTransaction.date, budgets])
 
   useEffect(() => {
-    // When selected budget changes, update available categories
     if (selectedBudgetId) {
       const budget = budgets.find(b => b.id === selectedBudgetId)
       if (budget && budget.budget_details) {
@@ -73,6 +82,12 @@ export default function Transactions() {
     }
   }
 
+  const handleFileChange = (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      setNewTransaction({ ...newTransaction, receipt_file: e.target.files[0] })
+    }
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
     if (!selectedBudgetId) {
@@ -80,10 +95,41 @@ export default function Transactions() {
       return
     }
 
+    setUploading(true)
     try {
+      let receiptUrl = null
+
+      // Upload Image if exists
+      if (newTransaction.receipt_file) {
+        // Compress image
+        const compressedFile = await compressImage(newTransaction.receipt_file, 25) // Max 20KB
+
+        const file = compressedFile
+        const fileExt = 'jpg' // Canvas exports as jpeg
+        const fileName = `${Math.random()}.${fileExt}`
+        const filePath = `${fileName}`
+
+        const { error: uploadError } = await supabase.storage
+          .from('file')
+          .upload(filePath, file)
+
+        if (uploadError) throw uploadError
+
+        const { data: { publicUrl } } = supabase.storage
+          .from('file')
+          .getPublicUrl(filePath)
+
+        receiptUrl = publicUrl
+      }
+
       const { error } = await supabase.from('transactions').insert({
-        ...newTransaction,
-        budget_id: selectedBudgetId
+        amount: newTransaction.amount,
+        description: newTransaction.description,
+        type: newTransaction.type,
+        category_id: newTransaction.category_id,
+        date: newTransaction.date,
+        budget_id: selectedBudgetId,
+        receipt_url: receiptUrl
       })
 
       if (error) throw error
@@ -94,11 +140,17 @@ export default function Transactions() {
         type: 'expense',
         category_id: '',
         date: new Date().toISOString().split('T')[0],
+        receipt_file: null
       })
-      // Re-trigger date effect to reset budget selection if needed, or keep current
+      // Reset file input manually if needed, or just rely on state
+      document.getElementById('receipt-upload').value = ''
+
       fetchData()
     } catch (error) {
+      console.error(error)
       alert('Error al agregar transacción')
+    } finally {
+      setUploading(false)
     }
   }
 
@@ -110,6 +162,60 @@ export default function Transactions() {
       setTransactions(transactions.filter((t) => t.id !== id))
     } catch (error) {
       alert('Error al eliminar transacción')
+    }
+  }
+  const openModal = (url) => {
+    setSelectedReceipt(url)
+    setIsModalOpen(true)
+  }
+
+  const closeModal = () => {
+    setIsModalOpen(false)
+    setSelectedReceipt('')
+  }
+
+  const triggerUpload = (id) => {
+    setUploadingId(id)
+    fileInputRef.current.click()
+  }
+
+  const handleExistingFileUpload = async (e) => {
+    if (!e.target.files || e.target.files.length === 0 || !uploadingId) return
+
+    setUploading(true)
+    try {
+      const file = e.target.files[0]
+      const compressedFile = await compressImage(file, 20)
+
+      const fileExt = 'jpg'
+      const fileName = `${Math.random()}.${fileExt}`
+      const filePath = `${fileName}`
+
+      const { error: uploadError } = await supabase.storage
+        .from('file')
+        .upload(filePath, compressedFile)
+
+      if (uploadError) throw uploadError
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('file')
+        .getPublicUrl(filePath)
+
+      const { error: updateError } = await supabase
+        .from('transactions')
+        .update({ receipt_url: publicUrl })
+        .eq('id', uploadingId)
+
+      if (updateError) throw updateError
+
+      fetchData()
+    } catch (error) {
+      console.error(error)
+      alert('Error al subir comprobante')
+    } finally {
+      setUploading(false)
+      setUploadingId(null)
+      if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
 
@@ -223,20 +329,32 @@ export default function Transactions() {
                   </optgroup>
                 ))}
               </select>
-              {!selectedBudgetId && newTransaction.date && (
-                <span className="text-xs text-danger">No hay presupuesto para este mes.</span>
-              )}
             </div>
 
-            <div className="flex items-end">
-              <button
-                type="submit"
-                className="flex w-full justify-center rounded bg-primary p-3 text-white dark:text-white font-medium hover:bg-opacity-90"
-                disabled={!selectedBudgetId}
-              >
-                <Plus className="w-5 h-5 mr-2" /> Agregar Transacción
-              </button>
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium text-black dark:text-white">Comprobante (Opcional)</label>
+              <input
+                id="receipt-upload"
+                type="file"
+                accept="image/*"
+                onChange={handleFileChange}
+                className="w-full cursor-pointer rounded border-[1.5px] border-stroke bg-transparent font-medium outline-none transition file:mr-5 file:border-collapse file:cursor-pointer file:border-0 file:border-r file:border-solid file:border-stroke file:bg-whiter file:py-3 file:px-5 file:hover:bg-primary file:hover:bg-opacity-10 focus:border-primary active:border-primary disabled:cursor-default disabled:bg-whiter dark:border-form-strokedark dark:bg-form-input dark:file:border-form-strokedark dark:file:bg-white/30 dark:file:text-white dark:focus:border-primary"
+              />
             </div>
+          </div>
+
+          <div className="mt-6 flex justify-end">
+            <button
+              type="submit"
+              className="flex w-full md:w-auto justify-center rounded bg-primary p-3 px-6 text-white font-medium hover:bg-opacity-90 disabled:opacity-50"
+              disabled={!selectedBudgetId || uploading}
+            >
+              {uploading ? 'Guardando...' : (
+                <>
+                  <Plus className="w-5 h-5 mr-2" /> Agregar Transacción
+                </>
+              )}
+            </button>
           </div>
         </form>
       </div>
@@ -247,10 +365,10 @@ export default function Transactions() {
           <table className="w-full table-auto">
             <thead>
               <tr className="bg-gray-2 text-left dark:bg-meta-4">
-                <th className="min-w-[150px] py-4 px-4 font-medium text-black dark:text-white xl:pl-11">
+                <th className="min-w-[120px] py-4 px-4 font-medium text-black dark:text-white xl:pl-11">
                   Fecha
                 </th>
-                <th className="min-w-[220px] py-4 px-4 font-medium text-black dark:text-white">
+                <th className="min-w-[200px] py-4 px-4 font-medium text-black dark:text-white">
                   Descripción
                 </th>
                 <th className="min-w-[150px] py-4 px-4 font-medium text-black dark:text-white">
@@ -258,6 +376,9 @@ export default function Transactions() {
                 </th>
                 <th className="min-w-[120px] py-4 px-4 font-medium text-black dark:text-white">
                   Monto
+                </th>
+                <th className="py-4 px-4 font-medium text-black dark:text-white text-center">
+                  Comprobante
                 </th>
                 <th className="py-4 px-4 font-medium text-black dark:text-white">
                   Acciones
@@ -281,6 +402,26 @@ export default function Transactions() {
                       {t.type === 'income' ? '+' : '-'}${Number(t.amount).toFixed(2)}
                     </p>
                   </td>
+                  <td className="border-b border-[#eee] py-5 px-4 dark:border-strokedark text-center">
+                    {t.receipt_url ? (
+                      <button
+                        onClick={() => openModal(t.receipt_url)}
+                        className="text-primary hover:text-opacity-80"
+                        title="Ver Comprobante"
+                      >
+                        <Eye className="w-5 h-5 mx-auto" />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => triggerUpload(t.id)}
+                        className="text-gray-500 hover:text-primary"
+                        title="Adjuntar Comprobante"
+                        disabled={uploading}
+                      >
+                        <Upload className="w-5 h-5 mx-auto" />
+                      </button>
+                    )}
+                  </td>
                   <td className="border-b border-[#eee] py-5 px-4 dark:border-strokedark">
                     <div className="flex items-center space-x-3.5">
                       <button
@@ -295,13 +436,39 @@ export default function Transactions() {
               ))}
               {transactions.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="py-5 text-center text-gray-500">No hay transacciones registradas.</td>
+                  <td colSpan={6} className="py-5 text-center text-gray-500">No hay transacciones registradas.</td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
       </div>
+
+      {/* Hidden File Input for Existing Transactions */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        className="hidden"
+        accept="image/*"
+        onChange={handleExistingFileUpload}
+      />
+
+      {/* Image Modal */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-999999 flex items-center justify-center bg-black bg-opacity-75 p-4">
+          <div className="relative max-w-4xl w-full max-h-[90vh] bg-white dark:bg-boxdark rounded-lg shadow-lg overflow-hidden flex flex-col">
+            <div className="flex justify-between items-center p-4 border-b border-stroke dark:border-strokedark">
+              <h3 className="text-xl font-semibold text-black dark:text-white">Comprobante</h3>
+              <button onClick={closeModal} className="text-gray-500 hover:text-black dark:hover:text-white">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="p-4 overflow-auto flex-1 flex items-center justify-center bg-gray-100 dark:bg-meta-4">
+              <img src={selectedReceipt} alt="Comprobante" className="max-w-full max-h-[70vh] object-contain rounded" />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

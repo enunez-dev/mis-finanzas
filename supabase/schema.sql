@@ -49,6 +49,7 @@ create table public.transactions (
   date date not null default CURRENT_DATE,
   description text,
   type text check (type in ('income', 'expense')) not null,
+  receipt_url text, -- URL of the uploaded receipt image
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
@@ -57,6 +58,20 @@ alter table public.categories disable row level security;
 alter table public.budgets disable row level security;
 alter table public.budget_details disable row level security;
 alter table public.transactions disable row level security;
+
+-- Storage Setup (Requires 'storage' schema to be available in Supabase)
+-- Note: In a real Supabase SQL editor, you might need to run this separately or ensure storage extension is enabled.
+-- We will try to insert into storage.buckets if it exists, otherwise the user might need to create it manually via dashboard.
+
+insert into storage.buckets (id, name, public)
+values ('file', 'file', true)
+on conflict (id) do nothing;
+
+-- Storage Policies (Allow public access for this single-user app)
+create policy "Public Access"
+  on storage.objects for all
+  using ( bucket_id = 'file' )
+  with check ( bucket_id = 'file' );
 
 -- Seed Parent Categories
 insert into public.categories (name, type, icon, color) values 
