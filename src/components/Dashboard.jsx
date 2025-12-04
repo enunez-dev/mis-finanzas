@@ -5,7 +5,9 @@ import { Calendar, ArrowUp, ArrowDown, DollarSign, CreditCard } from 'lucide-rea
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true)
-  const [currentMonth, setCurrentMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [budgets, setBudgets] = useState([])
+  const [selectedBudgetId, setSelectedBudgetId] = useState('')
+
   const [metrics, setMetrics] = useState({
     income: 0,
     expense: 0,
@@ -14,29 +16,50 @@ export default function Dashboard() {
   })
   const [recentTransactions, setRecentTransactions] = useState([])
   const [expenseComposition, setExpenseComposition] = useState({ series: [], labels: [] })
+  const [dailyExpenses, setDailyExpenses] = useState({ series: [], categories: [] })
 
   useEffect(() => {
-    fetchData()
-  }, [currentMonth])
+    fetchBudgets()
+  }, [])
 
-  const fetchData = async () => {
+  useEffect(() => {
+    if (selectedBudgetId) {
+      fetchDashboardData()
+    }
+  }, [selectedBudgetId])
+
+  const fetchBudgets = async () => {
+    try {
+      const { data, error } = await supabase.from('budgets').select('*').order('month', { ascending: false })
+      if (error) throw error
+      setBudgets(data || [])
+
+      if (data && data.length > 0) {
+        // Default to the most recent budget
+        setSelectedBudgetId(data[0].id)
+      } else {
+        setLoading(false) // No budgets to load
+      }
+    } catch (error) {
+      console.error('Error fetching budgets:', error)
+      setLoading(false)
+    }
+  }
+
+  const fetchDashboardData = async () => {
     setLoading(true)
     try {
-      const startOfMonth = `${currentMonth}-01`
-      const endOfMonth = new Date(new Date(startOfMonth).setMonth(new Date(startOfMonth).getMonth() + 1)).toISOString().slice(0, 10)
-
       const [transactionsRes, budgetRes, categoriesRes] = await Promise.all([
         supabase
           .from('transactions')
           .select('*, categories(name, parent_id)')
-          .gte('date', startOfMonth)
-          .lt('date', endOfMonth)
+          .eq('budget_id', selectedBudgetId)
           .order('date', { ascending: false }),
         supabase
           .from('budgets')
           .select('*, budget_details(*)')
-          .eq('month', currentMonth)
-          .maybeSingle(),
+          .eq('id', selectedBudgetId)
+          .single(),
         supabase.from('categories').select('*')
       ])
 
@@ -65,7 +88,7 @@ export default function Dashboard() {
         income,
         expense,
         budget: totalBudget,
-        balance: income - expense
+        balance: totalBudget - expense
       })
 
       setRecentTransactions(transactions.slice(0, 5))
@@ -91,6 +114,24 @@ export default function Dashboard() {
       })
 
       setExpenseComposition({ series: chartSeries, labels: chartLabels })
+
+      // Calculate Daily Expenses
+      const dailyMap = {}
+      transactions
+        .filter(t => t.type === 'expense')
+        .forEach(t => {
+          const date = t.date
+          dailyMap[date] = (dailyMap[date] || 0) + Number(t.amount)
+        })
+
+      const sortedDates = Object.keys(dailyMap).sort()
+      setDailyExpenses({
+        series: [{
+          name: 'Gastos',
+          data: sortedDates.map(date => dailyMap[date])
+        }],
+        categories: sortedDates
+      })
 
     } catch (error) {
       console.error('Error fetching dashboard data:', error)
@@ -122,6 +163,25 @@ export default function Dashboard() {
     dataLabels: { enabled: false },
   }
 
+  const dailyChartOptions = {
+    chart: { type: 'bar', toolbar: { show: false } },
+    plotOptions: {
+      bar: { borderRadius: 4, horizontal: false, }
+    },
+    dataLabels: { enabled: false },
+    xaxis: {
+      categories: dailyExpenses.categories,
+    },
+    colors: ['#3C50E0'],
+    tooltip: {
+      y: {
+        formatter: function (val) {
+          return "$ " + val.toLocaleString()
+        }
+      }
+    }
+  }
+
   if (loading) return <div>Cargando...</div>
 
   return (
@@ -131,12 +191,15 @@ export default function Dashboard() {
           Dashboard
         </h2>
         <div className="relative">
-          <input
-            type="month"
-            value={currentMonth}
-            onChange={(e) => setCurrentMonth(e.target.value)}
-            className="custom-input-date w-full rounded border-[1.5px] border-stroke bg-transparent py-2 px-4 font-medium outline-none transition focus:border-primary active:border-primary dark:border-form-strokedark dark:bg-form-input dark:focus:border-primary"
-          />
+          <select
+            value={selectedBudgetId}
+            onChange={(e) => setSelectedBudgetId(e.target.value)}
+            className="w-full appearance-none rounded border-[1.5px] border-stroke bg-transparent py-2 px-4 font-medium outline-none transition focus:border-primary active:border-primary dark:border-form-strokedark dark:bg-form-input dark:focus:border-primary"
+          >
+            {budgets.map(b => (
+              <option key={b.id} value={b.id}>{b.month}</option>
+            ))}
+          </select>
           <Calendar className="absolute right-4 top-3 h-5 w-5 text-gray-500 pointer-events-none" />
         </div>
       </div>
@@ -204,6 +267,23 @@ export default function Dashboard() {
       </div>
 
       <div className="mt-4 grid grid-cols-12 gap-4 md:mt-6 md:gap-6 2xl:mt-7.5 2xl:gap-7.5">
+
+
+        {/* Daily Expenses Chart */}
+        <div className="col-span-12 rounded-sm border border-stroke bg-white px-5 pt-7.5 pb-5 shadow-default dark:border-strokedark dark:bg-boxdark sm:px-7.5">
+          <div className="mb-3 justify-between gap-4 sm:flex">
+            <div>
+              <h5 className="text-xl font-semibold text-black dark:text-white">
+                Transacciones Diarias
+              </h5>
+            </div>
+          </div>
+          <div className="mb-2">
+            <div id="chartDaily" className="mx-auto flex justify-center w-full">
+              <ReactApexChart options={dailyChartOptions} series={dailyExpenses.series} type="bar" height={350} width="100%" />
+            </div>
+          </div>
+        </div>
         {/* Chart */}
         <div className="col-span-12 xl:col-span-5 rounded-sm border border-stroke bg-white px-5 pt-7.5 pb-5 shadow-default dark:border-strokedark dark:bg-boxdark sm:px-7.5">
           <div className="mb-3 justify-between gap-4 sm:flex">
@@ -219,7 +299,6 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
-
         {/* Recent Transactions */}
         <div className="col-span-12 xl:col-span-7 rounded-sm border border-stroke bg-white px-5 pt-6 pb-2.5 shadow-default dark:border-strokedark dark:bg-boxdark sm:px-7.5 xl:pb-1">
           <h4 className="mb-6 text-xl font-semibold text-black dark:text-white">
@@ -245,8 +324,8 @@ export default function Dashboard() {
             {recentTransactions.map((t, key) => (
               <div
                 className={`grid grid-cols-3 sm:grid-cols-4 ${key === recentTransactions.length - 1
-                    ? ""
-                    : "border-b border-stroke dark:border-strokedark"
+                  ? ""
+                  : "border-b border-stroke dark:border-strokedark"
                   }`}
                 key={key}
               >

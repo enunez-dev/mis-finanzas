@@ -21,31 +21,39 @@ export default function Budgets() {
   const fetchData = async () => {
     setLoading(true)
     try {
-      const startOfMonth = `${currentMonth}-01`
-      const endOfMonth = new Date(new Date(startOfMonth).setMonth(new Date(startOfMonth).getMonth() + 1)).toISOString().slice(0, 10)
-
-      const [budgetRes, categoriesRes, transactionsRes] = await Promise.all([
+      // 1. Fetch Categories and Budget Header in parallel
+      const [categoriesRes, budgetRes] = await Promise.all([
+        supabase.from('categories').select('*').order('name'),
         supabase
           .from('budgets')
           .select('*, budget_details(*, categories(name, parent_id))')
           .eq('month', currentMonth)
-          .maybeSingle(),
-        supabase.from('categories').select('*').order('name'),
-        supabase
-          .from('transactions')
-          .select('category_id, amount, type')
-          .gte('date', startOfMonth)
-          .lt('date', endOfMonth)
-          .eq('type', 'expense') // Only expenses count against budget
+          .maybeSingle()
       ])
 
-      if (budgetRes.error) throw budgetRes.error
       if (categoriesRes.error) throw categoriesRes.error
-      if (transactionsRes.error) throw transactionsRes.error
+      if (budgetRes.error) throw budgetRes.error
 
-      setBudgets(budgetRes.data ? [budgetRes.data] : [])
-      setCategories(categoriesRes.data || [])
-      setTransactions(transactionsRes.data || [])
+      const categoriesData = categoriesRes.data || []
+      const budgetData = budgetRes.data
+
+      setCategories(categoriesData)
+      setBudgets(budgetData ? [budgetData] : [])
+
+      // 2. If budget exists, fetch transactions linked to it
+      if (budgetData) {
+        const { data: transactionsData, error: transactionsError } = await supabase
+          .from('transactions')
+          .select('category_id, amount, type')
+          .eq('budget_id', budgetData.id)
+          .eq('type', 'expense')
+
+        if (transactionsError) throw transactionsError
+        setTransactions(transactionsData || [])
+      } else {
+        setTransactions([])
+      }
+
     } catch (error) {
       console.error('Error fetching data:', error)
     } finally {
